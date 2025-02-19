@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 from pyfastx import Fasta
 from keras.models import load_model
+import tensorflow as tf
+from tensorflow import TensorSpec
 import logging
 from sys import exit
 
@@ -71,6 +73,16 @@ class Annotator:
         paths = ('models/spliceai{}.h5'.format(x) for x in range(1, 6))
         self.models = [load_model(resource_filename(__name__, x)) for x in paths]
 
+        # Create tf.functions for each model to handle variable input lengths
+        self.predict_fns = []
+        for model in self.models:
+            @tf.function(input_signature=[TensorSpec(shape=(1, None, 4), dtype=tf.float32), TensorSpec(shape=(), dtype=tf.bool)])
+            def predict_fn(x, reverse):
+                if reverse:
+                    x = x[:, ::-1, ::-1]
+                return model(x, training=False)
+            self.predict_fns.append(predict_fn)
+
     def get_name_and_strand(self, chrom, pos):
 
         chrom = normalise_chrom(chrom, list(self.chroms)[0])
@@ -123,15 +135,19 @@ def normalise_chrom(source, target):
 def get_delta_scores_for_transcript(x_ref, x_alt, ref_len, alt_len, strand, cov, ann):
     del_len = max(ref_len-alt_len, 0)
 
-    x_ref = one_hot_encode(x_ref)[None, :]
-    x_alt = one_hot_encode(x_alt)[None, :]
+    # Convert sequences to tensors with float32 dtype
+    x_ref_encoded = one_hot_encode(x_ref).astype(np.float32)
+    x_alt_encoded = one_hot_encode(x_alt).astype(np.float32)
+    
+    x_ref_tensor = tf.convert_to_tensor(x_ref_encoded[None, :, :])  # Add batch dimension
+    x_alt_tensor = tf.convert_to_tensor(x_alt_encoded[None, :, :])
 
-    if strand == '-':
-        x_ref = x_ref[:, ::-1, ::-1]
-        x_alt = x_alt[:, ::-1, ::-1]
+    # Determine if reversal is needed based on strand
+    reverse = (strand == '-')
 
-    y_ref = np.mean([ann.models[m].predict(x_ref, verbose=0) for m in range(5)], axis=0)
-    y_alt = np.mean([ann.models[m].predict(x_alt, verbose=0) for m in range(5)], axis=0)
+    # Get predictions using the pre-defined tf.functions
+    y_ref = np.mean([ann.predict_fns[m](x_ref_tensor, reverse).numpy() for m in range(5)], axis=0)
+    y_alt = np.mean([ann.predict_fns[m](x_alt_tensor, reverse).numpy() for m in range(5)], axis=0)
 
     if strand == '-':
         y_ref = y_ref[:, ::-1]
