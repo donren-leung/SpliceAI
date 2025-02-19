@@ -222,7 +222,22 @@ def get_delta_scores(record, ann, dist_var, mask):
             alt_len = len(record.alts[j])
 
             x_ref = 'N'*pad_size[0]+seq[pad_size[0]:wid-pad_size[1]]+'N'*pad_size[1]
-            x_alt = x_ref[:wid//2]+str(record.alts[j])+x_ref[wid//2+ref_len:]
+            # x_alt = x_ref[:wid//2]+str(record.alts[j])+x_ref[wid//2+ref_len:]
+
+            ref_len = len(record.ref)
+            alt_len = len(record.alts[j])
+            delta = alt_len - ref_len
+            left_trim = delta // 2
+            right_trim = delta - left_trim
+
+            # Adjust the context to maintain fixed sequence length
+            x_alt = (
+                x_ref[:wid//2 - left_trim] 
+                + str(record.alts[j]) 
+                + x_ref[wid//2 + ref_len + right_trim:]
+            )
+
+            assert len(x_ref) == len(x_alt)
 
             total_count += 1
             strand = strands[i]
