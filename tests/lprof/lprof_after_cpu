@@ -1,0 +1,255 @@
+Wrote profile results to spliceai.lprof
+Timer unit: 1e-06 s
+
+Total time: 71.3812 s
+File: SpliceAI/spliceai/utils.py
+Function: get_delta_scores_for_transcript at line 122
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   122                                           @profile
+   123                                           def get_delta_scores_for_transcript(x_ref, x_alt, ref_len, alt_len, strand, cov, ann):
+   124       143        129.8      0.9      0.0      del_len = max(ref_len-alt_len, 0)
+   125                                           
+   126       143      30952.9    216.5      0.0      x_ref = one_hot_encode(x_ref)[None, :]
+   127       143      27601.2    193.0      0.0      x_alt = one_hot_encode(x_alt)[None, :]
+   128                                           
+   129       143         65.3      0.5      0.0      if strand == '-':
+   130       137        164.3      1.2      0.0          x_ref = x_ref[:, ::-1, ::-1]
+   131       137         94.8      0.7      0.0          x_alt = x_alt[:, ::-1, ::-1]
+   132                                           
+   133       858   33120160.5  38601.6     46.4      y_ref = np.mean([ann.models[m].predict_on_batch(x_ref) for m in range(5)], axis=0)
+   134       858   38200877.3  44523.2     53.5      y_alt = np.mean([ann.models[m].predict_on_batch(x_alt) for m in range(5)], axis=0)
+   135                                           
+   136       143         45.9      0.3      0.0      if strand == '-':
+   137       137        405.1      3.0      0.0          y_ref = y_ref[:, ::-1]
+   138       137         90.3      0.7      0.0          y_alt = y_alt[:, ::-1]
+   139                                           
+   140       143         55.1      0.4      0.0      y_alt_with_inserted_bases = None
+   141       143         46.7      0.3      0.0      if ref_len > 1 and alt_len == 1:
+   142        24        144.8      6.0      0.0          y_alt = np.concatenate([
+   143         8         11.7      1.5      0.0              y_alt[:, :cov//2+alt_len],
+   144         8         17.2      2.1      0.0              np.zeros((1, del_len, 3)),
+   145         8          5.4      0.7      0.0              y_alt[:, cov//2+alt_len:]],
+   146         8          0.9      0.1      0.0              axis=1)
+   147       135         55.7      0.4      0.0      elif ref_len == 1 and alt_len > 1:
+   148                                                   y_alt_with_inserted_bases = y_alt  # save the original scores for inserted bases
+   149                                                   y_alt = np.concatenate([
+   150                                                       y_alt[:, :cov//2],
+   151                                                       np.max(y_alt[:, cov//2:cov//2+alt_len], axis=1)[:, None, :],
+   152                                                       y_alt[:, cov//2+alt_len:]],
+   153                                                       axis=1)
+   154                                           
+   155                                               #MNP handling
+   156       135         61.0      0.5      0.0      elif ref_len > 1 and alt_len > 1:
+   157                                                   zblock = np.zeros((1,ref_len-1,3))
+   158                                                   y_alt = np.concatenate([
+   159                                                       y_alt[:, :cov//2],
+   160                                                       np.max(y_alt[:, cov//2:cov//2+alt_len], axis=1)[:, None, :],
+   161                                                       zblock,
+   162                                                       y_alt[:, cov//2+alt_len:]],
+   163                                                       axis=1)
+   164                                           
+   165       143        203.8      1.4      0.0      return y_ref, y_alt, y_alt_with_inserted_bases
+
+Total time: 72.3026 s
+File: SpliceAI/spliceai/utils.py
+Function: get_delta_scores at line 167
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   167                                           @profile
+   168                                           def get_delta_scores(record, ann, dist_var, mask):
+   169                                           
+   170        20         14.1      0.7      0.0      cov = 2*dist_var+1
+   171        20         12.6      0.6      0.0      wid = 10000+cov
+   172        20          6.9      0.3      0.0      scores = []
+   173                                           
+   174        20          4.6      0.2      0.0      try:
+   175        20         80.6      4.0      0.0          record.chrom, record.pos, record.ref, len(record.alts)
+   176                                               except TypeError:
+   177                                                   logging.warning('Skipping record (bad input): {}'.format(record))
+   178                                                   return scores
+   179                                           
+   180        20     160545.0   8027.2      0.2      (genes, strands, idxs) = ann.get_name_and_strand(record.chrom, record.pos)
+   181        20          8.9      0.4      0.0      if len(idxs) == 0:
+   182                                                   return scores
+   183                                           
+   184        20       3337.2    166.9      0.0      chrom = normalise_chrom(record.chrom, list(ann.ref_fasta.keys())[0])
+   185        20          7.3      0.4      0.0      try:
+   186        20        658.0     32.9      0.0          seq = ann.ref_fasta[chrom][record.pos-wid//2-1:record.pos+wid//2].seq
+   187                                               except (IndexError, ValueError):
+   188                                                   logging.warning('Skipping record (fasta issue): {}'.format(record))
+   189                                                   return scores
+   190                                           
+   191        20         63.2      3.2      0.0      if seq[wid//2:wid//2+len(record.ref)].upper() != record.ref:
+   192                                                   logging.warning('Skipping record (ref issue): {}'.format(record))
+   193                                                   return scores
+   194                                           
+   195        20         16.8      0.8      0.0      if len(seq) != wid:
+   196                                                   logging.warning('Skipping record (near chromosome end): {}'.format(record))
+   197                                                   return scores
+   198                                           
+   199        20         13.8      0.7      0.0      if len(record.ref) > 2*dist_var:
+   200                                                   logging.warning('Skipping record (ref too long): {}'.format(record))
+   201                                                   return scores
+   202                                           
+   203        20        129.2      6.5      0.0      genomic_coords = np.arange(record.pos - cov//2, record.pos + cov//2 + 1)
+   204                                           
+   205                                               # many of the transcripts in a gene can have the same tx start & stop positions, so their results can be cached
+   206                                               # since SpliceAI scores (prior to masking) depend only on transcript start & stop coordinates and strand.
+   207        20          4.8      0.2      0.0      delta_scores_transcript_cache = {}
+   208        20          3.5      0.2      0.0      model_prediction_count = 0
+   209        20          2.4      0.1      0.0      total_count = 0
+   210        40         49.4      1.2      0.0      for j in range(len(record.alts)):
+   211       190         76.1      0.4      0.0          for i in range(len(idxs)):
+   212                                           
+   213       170        582.1      3.4      0.0              if '.' in record.alts[j] or '-' in record.alts[j] or '*' in record.alts[j]:
+   214                                                           continue
+   215                                           
+   216       170        130.8      0.8      0.0              if '<' in record.alts[j] or '>' in record.alts[j]:
+   217                                                           continue
+   218                                           
+   219       170       9375.1     55.1      0.0              dist_ann = ann.get_pos_data(idxs[i], record.pos)
+   220       170        419.1      2.5      0.0              pad_size = [max(wid//2+dist_ann[0], 0), max(wid//2-dist_ann[1], 0)]
+   221       170        225.6      1.3      0.0              ref_len = len(record.ref)
+   222       170        131.2      0.8      0.0              alt_len = len(record.alts[j])
+   223                                           
+   224       170        784.3      4.6      0.0              x_ref = 'N'*pad_size[0]+seq[pad_size[0]:wid-pad_size[1]]+'N'*pad_size[1]
+   225       170        693.6      4.1      0.0              x_alt = x_ref[:wid//2]+str(record.alts[j])+x_ref[wid//2+ref_len:]
+   226                                           
+   227       170         60.9      0.4      0.0              total_count += 1
+   228       170         96.2      0.6      0.0              strand = strands[i]
+   229       170         63.2      0.4      0.0              args = (x_ref, x_alt, ref_len, alt_len, strand, cov)
+   230       170        822.9      4.8      0.0              if args not in delta_scores_transcript_cache:
+   231       143         24.0      0.2      0.0                  model_prediction_count += 1
+   232       143   71391211.5 499239.2     98.7                  delta_scores_transcript_cache[args] = get_delta_scores_for_transcript(*args, ann=ann)
+   233                                           
+   234       170         92.5      0.5      0.0              y_ref, y_alt, y_alt_with_inserted_bases = delta_scores_transcript_cache[args]
+   235                                           
+   236       170       5035.5     29.6      0.0              y = np.concatenate([y_ref, y_alt])
+   237                                           
+   238       170       1599.0      9.4      0.0              idx_pa = (y[1, :, 1]-y[0, :, 1]).argmax()
+   239       170        475.8      2.8      0.0              idx_na = (y[0, :, 1]-y[1, :, 1]).argmax()
+   240       170        416.7      2.5      0.0              idx_pd = (y[1, :, 2]-y[0, :, 2]).argmax()
+   241       170        394.5      2.3      0.0              idx_nd = (y[0, :, 2]-y[1, :, 2]).argmax()
+   242                                           
+   243       170       1114.6      6.6      0.0              mask_pa = np.logical_and((idx_pa-cov//2 == dist_ann[2]), mask)
+   244       170        284.7      1.7      0.0              mask_na = np.logical_and((idx_na-cov//2 != dist_ann[2]), mask)
+   245       170        245.2      1.4      0.0              mask_pd = np.logical_and((idx_pd-cov//2 == dist_ann[2]), mask)
+   246       170        206.1      1.2      0.0              mask_nd = np.logical_and((idx_nd-cov//2 != dist_ann[2]), mask)
+   247                                           
+   248       170        198.4      1.2      0.0              if len(genomic_coords) != y_ref.shape[1]:
+   249                                                           raise ValueError(f"SpliceAI internal error: len(genomic_coords) != y_ref.shape[1]: "
+   250                                                                            f"{len(genomic_coords)} != {y_ref.shape[1]}")
+   251                                           
+   252       170         66.3      0.4      0.0              if len(genomic_coords) != y_alt.shape[1]:
+   253                                                           raise ValueError(f"SpliceAI internal error: len(genomic_coords) != y_alt.shape[1]: "
+   254                                                                            f"{len(genomic_coords)} != {y_alt.shape[1]}")
+   255                                           
+   256       170       1660.5      9.8      0.0              DS_AG = (y[1, idx_pa, 1]-y[0, idx_pa, 1])*(1-mask_pa)
+   257       170        590.4      3.5      0.0              DS_AL = (y[0, idx_na, 1]-y[1, idx_na, 1])*(1-mask_na)
+   258       170        509.5      3.0      0.0              DS_DG = (y[1, idx_pd, 2]-y[0, idx_pd, 2])*(1-mask_pd)
+   259       170        481.0      2.8      0.0              DS_DL = (y[0, idx_nd, 2]-y[1, idx_nd, 2])*(1-mask_nd)
+   260                                           
+   261       170        171.8      1.0      0.0              DP_AG =  int(idx_pa-cov//2)
+   262       170         59.5      0.4      0.0              DP_AL =  int(idx_na-cov//2)
+   263       170         68.9      0.4      0.0              DP_DG =  int(idx_pd-cov//2)
+   264       170         74.6      0.4      0.0              DP_DL =  int(idx_nd-cov//2)
+   265                                           
+   266                                                       # if the variant is an insertion and the model predicts a change in splicing within the inserted bases,
+   267                                                       # retrieve scores for each inserted base to address https://github.com/broadinstitute/SpliceAI-lookup/issues/84
+   268                                           
+   269       170         88.2      0.5      0.0              if ref_len == 1 and alt_len > 1 and ((DS_AG >= 0.01 and DP_AG == 0) or (DS_DG >= 0.01 and DP_DG == 0)):
+   270                                           
+   271                                                           inserted_bases_genomic_coords = np.concatenate([
+   272                                                               np.arange(record.pos - INSERTED_BASES_CONTEXT + 1, record.pos + 1),
+   273                                                               [f"+{offset}" for offset in np.arange(1, alt_len)],
+   274                                                               np.arange(record.pos + 1, record.pos + INSERTED_BASES_CONTEXT + 1),
+   275                                                           ])
+   276                                           
+   277                                                           y_ref_inserted_bases = np.concatenate([
+   278                                                               y_ref[:, 1 + cov//2 - INSERTED_BASES_CONTEXT : 1 + cov//2],
+   279                                                               np.zeros((1, alt_len - 1, 3)),
+   280                                                               y_ref[:, 1 + cov//2 : 1 + cov//2 + INSERTED_BASES_CONTEXT],
+   281                                                           ], axis=1)
+   282                                           
+   283                                                           y_alt_inserted_bases = y_alt_with_inserted_bases[
+   284                                                               :, 1 + cov//2 - INSERTED_BASES_CONTEXT: 1 + cov//2 + (alt_len - 1) + INSERTED_BASES_CONTEXT]
+   285                                           
+   286                                                           assert y_ref_inserted_bases.shape == y_alt_inserted_bases.shape
+   287                                           
+   288                                                           ref_seq = (
+   289                                                               seq[wid//2 - INSERTED_BASES_CONTEXT + 1: wid//2 + 1] +
+   290                                                               " " * (alt_len - 1) +
+   291                                                               seq[wid//2 + 1 : wid//2 + 1 + INSERTED_BASES_CONTEXT]
+   292                                                           )
+   293                                                           alt_seq = (
+   294                                                               seq[wid//2 - INSERTED_BASES_CONTEXT + 1: wid//2 + 1] +
+   295                                                               record.alts[j][1:] +
+   296                                                               seq[wid//2 + len(record.ref) : wid//2 + len(record.ref) + INSERTED_BASES_CONTEXT]
+   297                                                           )
+   298                                           
+   299                                                           assert len(ref_seq) == len(alt_seq), f"len(ref_seq) != len(alt_seq): {len(ref_seq)} != {len(alt_seq)}"
+   300                                           
+   301                                                       else:
+   302       170         32.7      0.2      0.0                  inserted_bases_genomic_coords = ref_seq = alt_seq = y_ref_inserted_bases = y_alt_inserted_bases = None
+   303                                           
+   304      3230       1604.3      0.5      0.0              scores.append({
+   305       170       1094.7      6.4      0.0                  "ALLELE": record.alts[j],
+   306       170        167.6      1.0      0.0                  "NAME": genes[i],
+   307       170         92.3      0.5      0.0                  "STRAND": strands[i],
+   308       170        982.1      5.8      0.0                  "DS_AG": f"{DS_AG:{FLOAT_FORMAT}}",
+   309       170        130.1      0.8      0.0                  "DS_AL": f"{DS_AL:{FLOAT_FORMAT}}",
+   310       170         89.9      0.5      0.0                  "DS_DG": f"{DS_DG:{FLOAT_FORMAT}}",
+   311       170         79.8      0.5      0.0                  "DS_DL": f"{DS_DL:{FLOAT_FORMAT}}",
+   312       170         26.2      0.2      0.0                  "DP_AG": DP_AG,
+   313       170         22.1      0.1      0.0                  "DP_AL": DP_AL,
+   314       170         24.2      0.1      0.0                  "DP_DG": DP_DG,
+   315       170         22.7      0.1      0.0                  "DP_DL": DP_DL,
+   316       170        187.6      1.1      0.0                  "DS_AG_REF": f"{y[0, idx_pa, 1]:{FLOAT_FORMAT}}",
+   317       170        127.5      0.7      0.0                  "DS_AL_REF": f"{y[0, idx_na, 1]:{FLOAT_FORMAT}}",
+   318       170        121.0      0.7      0.0                  "DS_DG_REF": f"{y[0, idx_pd, 2]:{FLOAT_FORMAT}}",
+   319       170         99.3      0.6      0.0                  "DS_DL_REF": f"{y[0, idx_nd, 2]:{FLOAT_FORMAT}}",
+   320       170         94.4      0.6      0.0                  "DS_AG_ALT": f"{y[1, idx_pa, 1]:{FLOAT_FORMAT}}",
+   321       170         95.7      0.6      0.0                  "DS_AL_ALT": f"{y[1, idx_na, 1]:{FLOAT_FORMAT}}",
+   322       170        127.2      0.7      0.0                  "DS_DG_ALT": f"{y[1, idx_pd, 2]:{FLOAT_FORMAT}}",
+   323       170        133.8      0.8      0.0                  "DS_DL_ALT": f"{y[1, idx_nd, 2]:{FLOAT_FORMAT}}",
+   324       340         97.0      0.3      0.0                  "ALL_NON_ZERO_SCORES": [
+   325    340170      37924.3      0.1      0.1                      {
+   326      4544       1016.0      0.2      0.0                          "pos": int(genomic_coord),
+   327      4544       2788.9      0.6      0.0                          "RA": f"{ref_acceptor_score:{FLOAT_FORMAT}}",
+   328      4544       1983.4      0.4      0.0                          "AA": f"{alt_acceptor_score:{FLOAT_FORMAT}}",
+   329      4544       2088.1      0.5      0.0                          "RD": f"{ref_donor_score:{FLOAT_FORMAT}}",
+   330      4544       1906.5      0.4      0.0                          "AD": f"{alt_donor_score:{FLOAT_FORMAT}}",
+   331    340680     123278.0      0.4      0.2                      } for i, (genomic_coord, ref_acceptor_score, alt_acceptor_score, ref_donor_score, alt_donor_score) in enumerate(zip(
+   332       170        211.1      1.2      0.0                          genomic_coords, y_ref[0, :, 1], y_alt[0, :, 1], y_ref[0, :, 2], y_alt[0, :, 2])
+   333    340170     445855.3      1.3      0.6                      ) if any(score >= MIN_SCORE_THRESHOLD for score in (ref_acceptor_score, alt_acceptor_score, ref_donor_score, ref_acceptor_score))
+   334    335714      96437.7      0.3      0.1                           or i in (idx_pa, idx_na, idx_pd, idx_nd)
+   335                                                           ],
+   336       170         63.3      0.4      0.0                  "SCORES_FOR_INSERTED_BASES": [] if y_alt_inserted_bases is None else [
+   337                                                               {
+   338                                                                   "chrom": chrom,
+   339                                                                   "pos": genomic_coord,
+   340                                                                   "ref": ref_base,
+   341                                                                   "alt": alt_base,
+   342                                                                   "RA": f"{ref_acceptor_score:{FLOAT_FORMAT}}",  # REF acceptor score
+   343                                                                   "RD": f"{ref_donor_score:{FLOAT_FORMAT}}",     # REF donor score
+   344                                                                   "AA": f"{alt_acceptor_score:{FLOAT_FORMAT}}",  # ALT acceptor score
+   345                                                                   "AD": f"{alt_donor_score:{FLOAT_FORMAT}}",     # ALT donor score
+   346                                                               } for i, (genomic_coord, ref_base, alt_base, ref_acceptor_score, alt_acceptor_score, ref_donor_score, alt_donor_score) in enumerate(zip(
+   347                                                                   inserted_bases_genomic_coords, ref_seq, alt_seq, y_ref_inserted_bases[0, :, 1], y_alt_inserted_bases[0, :, 1], y_ref_inserted_bases[0, :, 2], y_alt_inserted_bases[0, :, 2]))
+   348                                                           ],
+   349                                                       })
+   350                                           
+   351                                                       # print SCORES_FOR_INSERTED_BASES
+   352                                                       #if scores[-1]["SCORES_FOR_INSERTED_BASES"]:
+   353                                                       #    from pprint import pprint
+   354                                                       #    import pandas as pd
+   355                                                       #    import tabulate
+   356                                                       #    print("="*100)
+   357                                                       #    print(f"Variant: {record.chrom}-{record.pos}-{record.ref}-{record.alts[j]}, strand: {strands[i]}")
+   358                                                       #    pprint("-".join([scores[-1]["SCORES_FOR_INSERTED_BASES"][0][key] for key in ("chrom", "pos", "ref", "alt")]))
+   359                                                       #    print(tabulate.tabulate(pd.DataFrame(scores[-1]["SCORES_FOR_INSERTED_BASES"]), headers="keys", tablefmt="pretty"))
+   360                                           
+   361        20        111.6      5.6      0.0      return scores
