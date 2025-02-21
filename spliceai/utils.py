@@ -119,7 +119,6 @@ def normalise_chrom(source, target):
 
     return source
 
-
 def get_delta_scores_for_transcript(x_ref, x_alt, ref_len, alt_len, strand, cov, ann):
     del_len = max(ref_len-alt_len, 0)
 
@@ -130,8 +129,8 @@ def get_delta_scores_for_transcript(x_ref, x_alt, ref_len, alt_len, strand, cov,
         x_ref = x_ref[:, ::-1, ::-1]
         x_alt = x_alt[:, ::-1, ::-1]
 
-    y_ref = np.mean([ann.models[m].predict(x_ref, verbose=0) for m in range(5)], axis=0)
-    y_alt = np.mean([ann.models[m].predict(x_alt, verbose=0) for m in range(5)], axis=0)
+    y_ref = np.mean([ann.models[m].predict_on_batch(x_ref) for m in range(5)], axis=0)
+    y_alt = np.mean([ann.models[m].predict_on_batch(x_alt) for m in range(5)], axis=0)
 
     if strand == '-':
         y_ref = y_ref[:, ::-1]
@@ -163,7 +162,6 @@ def get_delta_scores_for_transcript(x_ref, x_alt, ref_len, alt_len, strand, cov,
             axis=1)
 
     return y_ref, y_alt, y_alt_with_inserted_bases
-
 
 def get_delta_scores(record, ann, dist_var, mask):
 
