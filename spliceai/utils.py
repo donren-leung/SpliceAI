@@ -37,6 +37,20 @@ MIN_SCORE_THRESHOLD = 0.01
 
 INSERTED_BASES_CONTEXT = 5
 
+# Define an ensemble model wrapper
+class EnsembleModel(tf.keras.Model):
+    def __init__(self, models):
+        super(EnsembleModel, self).__init__()
+        self.models = models
+
+    def call(self, x, reverse):
+        # Run predictions for all models and stack them along a new axis and get the ensemble average.
+        preds = tf.reduce_mean(
+                    tf.stack([model(x, training=False) for model in self.models], axis=0),
+                    axis=0
+        )
+        return preds
+
 class Annotator:
 
     def __init__(self, ref_fasta, annotations):
@@ -73,15 +87,14 @@ class Annotator:
         paths = ('models/spliceai{}.h5'.format(x) for x in range(1, 6))
         self.models = [load_model(resource_filename(__name__, x)) for x in paths]
 
-        # Create tf.functions for each model to handle variable input lengths
-        self.predict_fns = []
-        for model in self.models:
-            @tf.function(input_signature=[TensorSpec(shape=(1, None, 4), dtype=tf.float32), TensorSpec(shape=(), dtype=tf.bool)])
-            def predict_fn(x, reverse):
-                if reverse:
-                    x = x[:, ::-1, ::-1]
-                return model(x, training=False)
-            self.predict_fns.append(predict_fn)
+        # Create the ensemble model for batched predictions.
+        self.ensemble_model = EnsembleModel(self.models)
+        self.ensemble_predict_fn = tf.function(
+            input_signature=[
+                TensorSpec(shape=(None, None, 4), dtype=tf.float32),
+                TensorSpec(shape=(), dtype=tf.bool)
+            ]
+        )(self.ensemble_model.call)
 
     def get_name_and_strand(self, chrom, pos):
 
@@ -131,25 +144,42 @@ def normalise_chrom(source, target):
 
     return source
 
-
 def get_delta_scores_for_transcript(x_ref, x_alt, ref_len, alt_len, strand, cov, ann):
+    global times_run
+    times_run += 1
     del_len = max(ref_len-alt_len, 0)
 
-    # Convert sequences to tensors with float32 dtype
-    x_ref_encoded = one_hot_encode(x_ref).astype(np.float32)
-    x_alt_encoded = one_hot_encode(x_alt).astype(np.float32)
+    # One-hot encode the reference and alternative sequences
+    x_ref_encoded = one_hot_encode(x_ref)
+    x_alt_encoded = one_hot_encode(x_alt)
     
-    x_ref_tensor = tf.convert_to_tensor(x_ref_encoded[None, :, :])  # Add batch dimension
-    x_alt_tensor = tf.convert_to_tensor(x_alt_encoded[None, :, :])
+    # Convert to tensors and add the batch dimension.
+    x_ref_tensor = tf.convert_to_tensor(x_ref_encoded[None, :, :], dtype=tf.float32)
+    x_alt_tensor = tf.convert_to_tensor(x_alt_encoded[None, :, :], dtype=tf.float32)
 
-    # Determine if reversal is needed based on strand
+    # Determine if reversal is needed based on strand.
     reverse = (strand == '-')
 
-    # Get predictions using the pre-defined tf.functions
-    y_ref = np.mean([ann.predict_fns[m](x_ref_tensor, reverse).numpy() for m in range(5)], axis=0)
-    y_alt = np.mean([ann.predict_fns[m](x_alt_tensor, reverse).numpy() for m in range(5)], axis=0)
+    # If reverse is True, get the reverse complement
+    if reverse:
+        x_ref_tensor = x_ref_tensor[:, ::-1, ::-1]
+        x_alt_tensor = x_alt_tensor[:, ::-1, ::-1]
 
-    if strand == '-':
+    log_dir = "./logs"  # Directory to save profiling data
+    if times_run == 2:
+            tf.profiler.experimental.start(log_dir)
+            # Use the ensemble_predict_fn to get predictions for both ref and alt in batch.
+            y_ref = ann.ensemble_predict_fn(x_ref_tensor, reverse).numpy()
+            y_alt = ann.ensemble_predict_fn(x_alt_tensor, reverse).numpy()
+            tf.profiler.experimental.stop()
+    elif times_run == 3:
+        exit(0)
+    else:
+        y_ref = ann.ensemble_predict_fn(x_ref_tensor, reverse).numpy()
+        y_alt = ann.ensemble_predict_fn(x_alt_tensor, reverse).numpy()
+
+    # Flip back if reverse so we are aligned back to genomic coords.
+    if reverse:
         y_ref = y_ref[:, ::-1]
         y_alt = y_alt[:, ::-1]
 
@@ -180,9 +210,9 @@ def get_delta_scores_for_transcript(x_ref, x_alt, ref_len, alt_len, strand, cov,
 
     return y_ref, y_alt, y_alt_with_inserted_bases
 
+times_run = 0
 
 def get_delta_scores(record, ann, dist_var, mask):
-
     cov = 2*dist_var+1
     wid = 10000+cov
     scores = []
@@ -244,8 +274,11 @@ def get_delta_scores(record, ann, dist_var, mask):
             strand = strands[i]
             args = (x_ref, x_alt, ref_len, alt_len, strand, cov)
             if args not in delta_scores_transcript_cache:
+                logging.warning(f"---cache miss {args[2:]}")
                 model_prediction_count += 1
                 delta_scores_transcript_cache[args] = get_delta_scores_for_transcript(*args, ann=ann)
+            else:
+                logging.warning(f"+++cache hit {args[2:]}")
 
             y_ref, y_alt, y_alt_with_inserted_bases = delta_scores_transcript_cache[args]
 
